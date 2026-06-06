@@ -55,7 +55,9 @@ class AnalysisConfig(BaseSettings):
     """分析配置。"""
 
     mode: AnalysisMode = AnalysisMode.MERGED
+    llm_mode: str = "cli"  # "cli" 使用本地 claude-glm，"api" 使用 Anthropic API
     llm_model: str = "claude-haiku-4-5-20251001"
+    cli_command: str = "claude-glm"  # 本地 CLI 命令名
     batch_size: int = 15
     max_concurrent_llm_requests: int = 5
     max_llm_budget_usd: Optional[float] = 10.0

@@ -22,6 +22,36 @@ def _get_or_create_settings(config_path: Optional[Path]) -> Settings:
     return load_settings(config_path)
 
 
+def _create_llm_provider(settings: Settings, cost_tracker):
+    """根据 llm_mode 自动选择 LLM Provider。"""
+    mode = settings.analysis.llm_mode
+
+    if mode == "cli":
+        from .llm import ClaudeCliProvider
+
+        console.print(f"[dim]  LLM 模式: 本地 CLI ({settings.analysis.cli_command})[/dim]")
+        return ClaudeCliProvider(
+            cli_command=settings.analysis.cli_command,
+            model=settings.analysis.llm_model,
+            cost_tracker=cost_tracker,
+        )
+    elif mode == "api":
+        from .llm import ClaudeProvider
+
+        if not settings.anthropic_api_key:
+            console.print("[red]API 模式需要设置 PPM_ANTHROPIC_API_KEY 环境变量[/red]")
+            sys.exit(1)
+        console.print(f"[dim]  LLM 模式: Anthropic API ({settings.analysis.llm_model})[/dim]")
+        return ClaudeProvider(
+            api_key=settings.anthropic_api_key,
+            model=settings.analysis.llm_model,
+            cost_tracker=cost_tracker,
+        )
+    else:
+        console.print(f"[red]未知的 llm_mode: {mode}（支持: cli, api）[/red]")
+        sys.exit(1)
+
+
 @click.group()
 @click.version_option(version="0.1.0")
 def cli():
@@ -37,6 +67,7 @@ def cli():
 @click.option("--accept-tos-risk", is_flag=True, help="确认已了解服务条款风险")
 @click.option("--dry-run", is_flag=True, help="仅验证配置，不执行抓取")
 @click.option("--output", "-o", type=click.Path(), default=None, help="输出目录")
+@click.option("--llm-mode", type=click.Choice(["cli", "api"]), default=None, help="LLM 调用方式（默认: cli）")
 def run(
     config: Optional[str],
     keywords: tuple,
@@ -45,6 +76,7 @@ def run(
     accept_tos_risk: bool,
     dry_run: bool,
     output: Optional[str],
+    llm_mode: Optional[str],
 ):
     """执行痛点抓取与分析流水线。"""
     # Windows asyncio 兼容
@@ -59,6 +91,10 @@ def run(
 
     config_path = Path(config) if config else None
     settings = _get_or_create_settings(config_path)
+
+    # 命令行覆盖 llm_mode
+    if llm_mode:
+        settings.analysis.llm_mode = llm_mode
 
     # 构建 PipelineConfig
     kw_list = list(keywords) if keywords else ["产品难用", "太贵了", "客服不回复"]
@@ -81,9 +117,18 @@ def run(
     console.print(f"  关键词: {', '.join(kw_list)}")
     console.print(f"  平台: {', '.join(p.value for p in plat_list)}")
     console.print(f"  模式: {mode}")
+    console.print(f"  LLM: {settings.analysis.llm_mode} ({settings.analysis.llm_model})")
     console.print(f"  输出: {pipeline_config.output_dir}\n")
 
     if dry_run:
+        # 检查 LLM 可用性
+        if settings.analysis.llm_mode == "cli":
+            from .llm import ClaudeCliProvider
+
+            if not ClaudeCliProvider.is_available(settings.analysis.cli_command):
+                console.print(f"[red]  ✗ CLI '{settings.analysis.cli_command}' 不可用[/red]")
+                sys.exit(1)
+            console.print(f"[green]  ✓ CLI '{settings.analysis.cli_command}' 可用[/green]")
         console.print("[green]Dry run 完成，配置有效。[/green]")
         return
 
@@ -99,7 +144,6 @@ async def _run_pipeline(config: PipelineConfig, settings: Settings):
     from .analysis.pipeline import AnalysisPipeline
     from .compliance.anonymizer import Anonymizer
     from .exporters import ExcelExporter, JsonExporter, MarkdownExporter
-    from .llm import MockLLMProvider
     from .scrapers.registry import ScraperRegistry
     from .storage.migrations import run_migrations
     from .utils.cost import CostTracker
@@ -108,8 +152,6 @@ async def _run_pipeline(config: PipelineConfig, settings: Settings):
 
     # 初始化组件
     registry = ScraperRegistry()
-    # 注意：实际使用时需要注册真实抓取器（带 API key）
-    # 这里用 Mock 提供基础框架
 
     db_path = Path("painpoint_miner.db")
     await run_migrations(db_path)
@@ -119,7 +161,10 @@ async def _run_pipeline(config: PipelineConfig, settings: Settings):
         budget=config.max_llm_budget_usd,
         model=config.llm_model,
     )
-    llm = MockLLMProvider()  # 实际使用替换为 ClaudeProvider
+
+    # 自动选择 LLM Provider
+    llm = _create_llm_provider(settings, cost_tracker)
+
     extractor = PainPointExtractor(llm=llm, batch_size=settings.analysis.batch_size, cost_tracker=cost_tracker)
     clusterer = PainPointClusterer(
         model_name=settings.analysis.embedding.model,

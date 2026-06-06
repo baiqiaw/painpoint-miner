@@ -1,4 +1,7 @@
-"""Prompt 模板 — 痛点提取 + 情感分析。"""
+"""Prompt 模板 — 痛点提取 + 情感分析。
+
+注意：模板中的 JSON 示例花括号必须双写 {{ }}，只有占位符用单花括号。
+"""
 
 MERGED_EXTRACTION_PROMPT = """你是一位专业的用户反馈分析师。分析以下社交媒体帖子，提取用户痛点。
 
@@ -18,20 +21,20 @@ MERGED_EXTRACTION_PROMPT = """你是一位专业的用户反馈分析师。分�
 返回 JSON 数组，每个元素对应一个帖子中的痛点：
 ```json
 [
-  {
+  {{
     "post_index": 0,
     "has_pain_point": true,
     "pain_points": [
-      {
+      {{
         "description": "...",
         "pain_type": "...",
         "severity": 3,
         "sentiment_score": -0.5,
         "sentiment_label": "negative",
         "evidence_quote": "..."
-      }
+      }}
     ]
-  }
+  }}
 ]
 ```
 
@@ -54,11 +57,11 @@ SPLIT_EXTRACTION_PROMPT = """你是一位专业的用户反馈分析师。分析
 返回 JSON 数组：
 ```json
 [
-  {
+  {{
     "post_index": 0,
     "has_pain_point": true,
-    "pain_points": [{"description": "...", "pain_type": "...", "severity": 3, "evidence_quote": "..."}]
-  }
+    "pain_points": [{{"description": "...", "pain_type": "...", "severity": 3, "evidence_quote": "..."}}]
+  }}
 ]
 ```
 
@@ -73,7 +76,7 @@ SPLIT_SENTIMENT_PROMPT = """对以下痛点描述进行情感分析。
 返回 JSON 数组：
 ```json
 [
-  {"index": 0, "sentiment_score": -0.7, "sentiment_label": "negative"},
+  {{"index": 0, "sentiment_score": -0.7, "sentiment_label": "negative"}},
   ...
 ]
 ```

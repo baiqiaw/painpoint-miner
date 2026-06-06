@@ -17,7 +17,9 @@ scraping:
 
 analysis:
   mode: "merged"
+  llm_mode: "cli"           # "cli" 使用本地 claude-glm（推荐，无需 API Key）, "api" 使用 Anthropic API
   llm_model: "claude-haiku-4-5-20251001"
+  cli_command: "claude-glm"  # 本地 CLI 命令名
   batch_size: 15
   max_concurrent_llm_requests: 5
   max_llm_budget_usd: 10.0
