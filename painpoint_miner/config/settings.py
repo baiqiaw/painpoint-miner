@@ -1,9 +1,10 @@
 """配置加载模块 — 支持 YAML + 环境变量 + .env。"""
 
+import re
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from ..models.enums import AnalysisMode, Platform
@@ -55,15 +56,23 @@ class AnalysisConfig(BaseSettings):
     """分析配置。"""
 
     mode: AnalysisMode = AnalysisMode.MERGED
-    llm_mode: str = "cli"  # "cli" 使用本地 claude-glm，"api" 使用 Anthropic API
+    llm_mode: Literal["cli", "api"] = "cli"
     llm_model: str = "claude-haiku-4-5-20251001"
-    cli_command: str = "claude-glm"  # 本地 CLI 命令名
+    cli_command: str = "claude-glm"
     batch_size: int = 15
     max_concurrent_llm_requests: int = 5
     max_llm_budget_usd: Optional[float] = 10.0
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     clustering: ClusteringConfig = Field(default_factory=ClusteringConfig)
     dedup: DedupConfig = Field(default_factory=DedupConfig)
+
+    @field_validator("cli_command", "llm_model")
+    @classmethod
+    def validate_safe_name(cls, v: str) -> str:
+        """只允许安全字符（防命令注入）。"""
+        if not re.match(r"^[a-zA-Z0-9._-]+$", v):
+            raise ValueError(f"contains unsafe characters: {v!r}")
+        return v
 
 
 class ExportConfig(BaseSettings):

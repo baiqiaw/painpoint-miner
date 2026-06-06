@@ -1,8 +1,6 @@
 """Claude API LLM Provider。"""
 
-import json
 import logging
-import re
 from typing import Optional
 
 import anthropic
@@ -17,6 +15,7 @@ from .prompt_templates import (
     format_items_block,
     format_posts_block,
 )
+from .utils import parse_llm_json_response
 
 logger = logging.getLogger("painpoint_miner")
 
@@ -71,33 +70,6 @@ class ClaudeProvider(BaseLLMProvider):
 
         return text
 
-    @staticmethod
-    def _parse_json_response(text: str) -> list[dict]:
-        """从 Claude 响应中解析 JSON。"""
-        # 尝试直接解析
-        text = text.strip()
-        # 移除 markdown 代码块标记
-        if text.startswith("```"):
-            text = re.sub(r"^```\w*\n?", "", text)
-            text = re.sub(r"\n?```$", "", text)
-            text = text.strip()
-
-        try:
-            result = json.loads(text)
-            if isinstance(result, list):
-                return result
-            return [result]
-        except json.JSONDecodeError:
-            # 尝试提取 JSON 数组
-            match = re.search(r"\[.*\]", text, re.DOTALL)
-            if match:
-                try:
-                    return json.loads(match.group())
-                except json.JSONDecodeError:
-                    pass
-            logger.warning("Failed to parse LLM JSON response")
-            return []
-
     async def extract_pain_points(
         self,
         posts: list[dict],
@@ -105,16 +77,15 @@ class ClaudeProvider(BaseLLMProvider):
     ) -> list[dict]:
         """提取痛点和情感。"""
         posts_block = format_posts_block(posts)
+        system = "你是专业的用户反馈分析师。只返回 JSON 格式的分析结果。"
 
         if mode == "merged":
-            system = "你是专业的用户反馈分析师。只返回 JSON 格式的分析结果。"
             user = MERGED_EXTRACTION_PROMPT.format(posts_block=posts_block)
         else:
-            system = "你是专业的用户反馈分析师。只返回 JSON 格式的分析结果。"
             user = SPLIT_EXTRACTION_PROMPT.format(posts_block=posts_block)
 
         response_text = await self._call_claude(system, user)
-        return self._parse_json_response(response_text)
+        return parse_llm_json_response(response_text)
 
     async def extract_sentiment(self, descriptions: list[str]) -> list[dict]:
         """独立情感分析（split 模式使用）。"""
@@ -123,7 +94,7 @@ class ClaudeProvider(BaseLLMProvider):
         user = SPLIT_SENTIMENT_PROMPT.format(items_block=items_block)
 
         response_text = await self._call_claude(system, user)
-        return self._parse_json_response(response_text)
+        return parse_llm_json_response(response_text)
 
     async def generate_cluster_label(
         self, cluster_descriptions: list[str]
@@ -134,6 +105,11 @@ class ClaudeProvider(BaseLLMProvider):
         user = CLUSTER_LABEL_PROMPT.format(descriptions=descriptions)
 
         return await self._call_claude(system, user)
+
+    @classmethod
+    def is_available(cls) -> bool:
+        """检查 Anthropic SDK 是否已安装。"""
+        return True
 
 
 class MockLLMProvider(BaseLLMProvider):
@@ -156,11 +132,18 @@ class MockLLMProvider(BaseLLMProvider):
                 ],
             }
         ]
+        self._sentiments = [
+            {"sentiment_score": -0.6, "sentiment_label": "negative"},
+        ]
 
     async def extract_pain_points(
         self, posts: list[dict], mode: str = "merged"
     ) -> list[dict]:
         return self._pain_points[: len(posts)]
+
+    async def extract_sentiment(self, descriptions: list[str]) -> list[dict]:
+        """Mock 情感分析。"""
+        return self._sentiments[: len(descriptions)]
 
     async def generate_cluster_label(
         self, cluster_descriptions: list[str]

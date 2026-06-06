@@ -35,7 +35,7 @@ def _create_llm_provider(settings: Settings, cost_tracker):
             model=settings.analysis.llm_model,
             cost_tracker=cost_tracker,
         )
-    elif mode == "api":
+    else:  # mode == "api"
         from .llm import ClaudeProvider
 
         if not settings.anthropic_api_key:
@@ -47,9 +47,53 @@ def _create_llm_provider(settings: Settings, cost_tracker):
             model=settings.analysis.llm_model,
             cost_tracker=cost_tracker,
         )
-    else:
-        console.print(f"[red]未知的 llm_mode: {mode}（支持: cli, api）[/red]")
-        sys.exit(1)
+
+
+def _register_scrapers(registry, settings: Settings) -> list[Platform]:
+    """根据已配置的 API Key 动态注册抓取器。
+
+    Returns:
+        成功注册的平台列表。
+    """
+    registered = []
+
+    if settings.tikhub_api_key:
+        try:
+            from .scrapers.tikhub.client import TikHubClient
+            from .scrapers.tikhub.xiaohongshu import XiaohongshuScraper
+            from .scrapers.tikhub.weibo import WeiboScraper
+            from .scrapers.tikhub.douyin import DouyinScraper
+            from .scrapers.tikhub.zhihu import ZhihuScraper
+            from .utils.rate_limiter import RateLimiter
+
+            rate_limiter = RateLimiter(
+                requests_per_minute=settings.scraping.rate_limit.tikhub_requests_per_minute
+            )
+            client = TikHubClient(
+                api_key=settings.tikhub_api_key,
+                rate_limiter=rate_limiter,
+            )
+
+            registry.register(Platform.XIAOHONGSHU, XiaohongshuScraper(client))
+            registry.register(Platform.WEIBO, WeiboScraper(client))
+            registry.register(Platform.DOUYIN, DouyinScraper(client))
+            registry.register(Platform.ZHIHU, ZhihuScraper(client))
+            registered.extend([Platform.XIAOHONGSHU, Platform.WEIBO, Platform.DOUYIN, Platform.ZHIHU])
+        except Exception as e:
+            console.print(f"[yellow]  ⚠ TikHub 抓取器注册失败: {e}[/yellow]")
+
+    if settings.twitter_bearer_token:
+        try:
+            from .scrapers.twitter.api_v2_scraper import TwitterApiV2Scraper
+
+            registry.register(Platform.TWITTER, TwitterApiV2Scraper(
+                bearer_token=settings.twitter_bearer_token,
+            ))
+            registered.append(Platform.TWITTER)
+        except Exception as e:
+            console.print(f"[yellow]  ⚠ Twitter 抓取器注册失败: {e}[/yellow]")
+
+    return registered
 
 
 @click.group()
@@ -79,7 +123,6 @@ def run(
     llm_mode: Optional[str],
 ):
     """执行痛点抓取与分析流水线。"""
-    # Windows asyncio 兼容
     if sys.platform == "win32":
         asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
@@ -92,11 +135,9 @@ def run(
     config_path = Path(config) if config else None
     settings = _get_or_create_settings(config_path)
 
-    # 命令行覆盖 llm_mode
     if llm_mode:
         settings.analysis.llm_mode = llm_mode
 
-    # 构建 PipelineConfig
     kw_list = list(keywords) if keywords else ["产品难用", "太贵了", "客服不回复"]
     plat_list = [Platform(p) for p in platforms] if platforms else settings.scraping.platforms
 
@@ -120,23 +161,60 @@ def run(
     console.print(f"  LLM: {settings.analysis.llm_mode} ({settings.analysis.llm_model})")
     console.print(f"  输出: {pipeline_config.output_dir}\n")
 
+    # 注册抓取器
+    from .scrapers.registry import ScraperRegistry
+
+    registry = ScraperRegistry()
+    registered = _register_scrapers(registry, settings)
+
+    if not registered:
+        console.print("[red]未注册任何抓取器。请至少配置一个平台的 API Key（TikHub 或 Twitter）。[/red]")
+        console.print("[dim]  TikHub: 设置 PPM_TIKHUB_API_KEY（小红书/微博/抖音/知乎）[/dim]")
+        console.print("[dim]  Twitter: 设置 PPM_TWITTER_BEARER_TOKEN[/dim]")
+        if not dry_run:
+            sys.exit(1)
+
+    # 检查请求的平台是否都有对应抓取器
+    unregistered = [p for p in plat_list if p not in registered]
+    if unregistered:
+        for p in unregistered:
+            console.print(f"[yellow]  ⚠ 平台 {p.value} 无可用抓取器（缺少 API Key），已跳过[/yellow]")
+        plat_list = [p for p in plat_list if p in registered]
+        if not plat_list:
+            console.print("[red]所有请求的平台都无可用抓取器。[/red]")
+            if not dry_run:
+                sys.exit(1)
+
     if dry_run:
-        # 检查 LLM 可用性
+        # 检查 LLM
         if settings.analysis.llm_mode == "cli":
             from .llm import ClaudeCliProvider
 
             if not ClaudeCliProvider.is_available(settings.analysis.cli_command):
-                console.print(f"[red]  ✗ CLI '{settings.analysis.cli_command}' 不可用[/red]")
+                console.print(
+                    f"[red]  ✗ CLI '{settings.analysis.cli_command}' 不可用。\n"
+                    f"    请确认已安装并认证。安装指南: https://docs.anthropic.com/en/docs/claude-code\n"
+                    f"    如命令名不同，请在 config.yaml 中设置 cli_command[/red]"
+                )
                 sys.exit(1)
             console.print(f"[green]  ✓ CLI '{settings.analysis.cli_command}' 可用[/green]")
+        elif settings.analysis.llm_mode == "api" and not settings.anthropic_api_key:
+            console.print("[red]  ✗ API 模式需要 PPM_ANTHROPIC_API_KEY[/red]")
+            sys.exit(1)
+        else:
+            console.print("[green]  ✓ LLM 配置有效[/green]")
+
+        console.print(f"[green]  ✓ 已注册 {len(registered)} 个平台抓取器[/green]")
         console.print("[green]Dry run 完成，配置有效。[/green]")
         return
 
-    # 执行流水线
-    asyncio.run(_run_pipeline(pipeline_config, settings))
+    # 更新 pipeline_config 中的平台列表（去掉无抓取器的）
+    pipeline_config.platforms = plat_list
+
+    asyncio.run(_run_pipeline(pipeline_config, settings, registry))
 
 
-async def _run_pipeline(config: PipelineConfig, settings: Settings):
+async def _run_pipeline(config: PipelineConfig, settings: Settings, registry):
     """异步执行完整流水线。"""
     from .analysis.clustering import PainPointClusterer
     from .analysis.dedup import PainPointDeduplicator
@@ -144,14 +222,10 @@ async def _run_pipeline(config: PipelineConfig, settings: Settings):
     from .analysis.pipeline import AnalysisPipeline
     from .compliance.anonymizer import Anonymizer
     from .exporters import ExcelExporter, JsonExporter, MarkdownExporter
-    from .scrapers.registry import ScraperRegistry
     from .storage.migrations import run_migrations
     from .utils.cost import CostTracker
 
     console.print("[bold blue]正在初始化...[/bold blue]")
-
-    # 初始化组件
-    registry = ScraperRegistry()
 
     db_path = Path("painpoint_miner.db")
     await run_migrations(db_path)
@@ -162,7 +236,6 @@ async def _run_pipeline(config: PipelineConfig, settings: Settings):
         model=config.llm_model,
     )
 
-    # 自动选择 LLM Provider
     llm = _create_llm_provider(settings, cost_tracker)
 
     extractor = PainPointExtractor(llm=llm, batch_size=settings.analysis.batch_size, cost_tracker=cost_tracker)
@@ -211,7 +284,6 @@ async def _run_pipeline(config: PipelineConfig, settings: Settings):
             await exporter.export(report, output_path)
             console.print(f"  [green]✓[/green] {fmt_name}: {output_path}")
 
-    # 成本报告
     if cost_tracker:
         summary = cost_tracker.summary()
         console.print(f"\n[bold]LLM 成本:[/bold] ${summary.estimated_cost_usd:.4f}")

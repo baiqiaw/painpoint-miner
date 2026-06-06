@@ -3,6 +3,8 @@
 import asyncio
 import json
 import logging
+import os
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -18,12 +20,25 @@ from .prompt_templates import (
     format_items_block,
     format_posts_block,
 )
+from .utils import parse_llm_json_response
 
 logger = logging.getLogger("painpoint_miner")
 
+# 安全的命令名字符白名单
+import re
+
+_SAFE_NAME_RE = re.compile(r"^[a-zA-Z0-9._-]+$")
+
+
+def _validate_safe_name(value: str, field: str) -> str:
+    """校验命令名/模型名只含安全字符。"""
+    if not _SAFE_NAME_RE.match(value):
+        raise ValueError(f"{field} contains unsafe characters: {value!r}")
+    return value
+
 
 class ClaudeCliProvider(BaseLLMProvider):
-    """通过本地 Claude CLI（claude-glm）调用 LLM。
+    """通过本地 Claude CLI（如 claude-glm）调用 LLM。
 
     免去 Anthropic API Key 配置，直接复用本地已认证的 CLI。
     """
@@ -34,63 +49,54 @@ class ClaudeCliProvider(BaseLLMProvider):
         model: str = "claude-haiku-4-5-20251001",
         cost_tracker: Optional[CostTracker] = None,
     ):
+        _validate_safe_name(cli_command, "cli_command")
+        _validate_safe_name(model, "model")
         self._cli_command = cli_command
         self._model = model
         self._cost_tracker = cost_tracker
 
     async def _call_cli(self, system: str, user: str) -> str:
         """调用 claude-glm CLI 并返回响应文本。"""
-        # 构建完整 prompt（system + user 合并）
         full_prompt = f"{system}\n\n{user}"
 
-        # 写入临时文件避免 shell 转义和长度限制
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".txt", delete=False, encoding="utf-8"
-        ) as f:
-            f.write(full_prompt)
-            prompt_path = f.name
-
+        # 写入临时文件，通过 stdin 管道传递（避免 shell 拼接注入）
+        fd, prompt_path = tempfile.mkstemp(suffix=".txt", text=True)
         try:
-            result = await asyncio.to_thread(
-                self._run_subprocess, prompt_path
-            )
+            os.chmod(prompt_path, 0o600)  # 仅所有者读写
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(full_prompt)
+            result = await asyncio.to_thread(self._run_subprocess, prompt_path)
         finally:
             Path(prompt_path).unlink(missing_ok=True)
 
         return result
 
     def _run_subprocess(self, prompt_path: str) -> str:
-        """同步执行子进程。"""
-        # 通过 powershell 调用（Windows 环境 claude-glm 在 PowerShell 中可用）
-        import sys
+        """同步执行子进程 — 使用参数列表（非 shell 拼接）防止注入。"""
+        cmd = [self._cli_command, "-p", "--output-format", "json", "--model", self._model]
 
-        if sys.platform == "win32":
-            cmd = (
-                f'Get-Content "{prompt_path}" -Raw | '
-                f'{self._cli_command} -p --output-format json '
-                f'--model {self._model}'
-            )
-            proc = subprocess.run(
-                ["powershell.exe", "-Command", cmd],
-                capture_output=True,
-                text=True,
-                timeout=300,
-                encoding="utf-8",
-            )
-        else:
-            with open(prompt_path, "r", encoding="utf-8") as f:
+        try:
+            with open(prompt_path, "r", encoding="utf-8") as stdin_file:
                 proc = subprocess.run(
-                    [self._cli_command, "-p", "--output-format", "json", "--model", self._model],
-                    stdin=f,
+                    cmd,
+                    stdin=stdin_file,
                     capture_output=True,
                     text=True,
                     timeout=300,
                     encoding="utf-8",
                 )
+        except FileNotFoundError:
+            raise RuntimeError(
+                f"CLI '{self._cli_command}' 未找到。请确认已安装并在 PATH 中可用。"
+            )
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(f"{self._cli_command} 执行超时（300秒）")
 
         if proc.returncode != 0:
-            logger.error("claude-glm CLI error: %s", proc.stderr[:500])
-            raise RuntimeError(f"claude-glm CLI failed (exit {proc.returncode}): {proc.stderr[:200]}")
+            logger.error("%s CLI error: %s", self._cli_command, proc.stderr[:500])
+            raise RuntimeError(
+                f"{self._cli_command} CLI failed (exit {proc.returncode}): {proc.stderr[:200]}"
+            )
 
         return self._parse_response(proc.stdout)
 
@@ -99,7 +105,7 @@ class ClaudeCliProvider(BaseLLMProvider):
         try:
             data = json.loads(raw_output.strip())
         except json.JSONDecodeError:
-            # 非 JSON，直接返回文本
+            logger.warning("CLI output is not valid JSON, returning raw text")
             return raw_output.strip()
 
         text = data.get("result", "").strip()
@@ -114,32 +120,6 @@ class ClaudeCliProvider(BaseLLMProvider):
             )
 
         return text
-
-    @staticmethod
-    def _parse_json_response(text: str) -> list[dict]:
-        """从响应中解析 JSON（复用 ClaudeProvider 的逻辑）。"""
-        import re
-
-        text = text.strip()
-        if text.startswith("```"):
-            text = re.sub(r"^```\w*\n?", "", text)
-            text = re.sub(r"\n?```$", "", text)
-            text = text.strip()
-
-        try:
-            result = json.loads(text)
-            if isinstance(result, list):
-                return result
-            return [result]
-        except json.JSONDecodeError:
-            match = re.search(r"\[.*\]", text, re.DOTALL)
-            if match:
-                try:
-                    return json.loads(match.group())
-                except json.JSONDecodeError:
-                    pass
-            logger.warning("Failed to parse LLM JSON response")
-            return []
 
     async def extract_pain_points(
         self,
@@ -156,7 +136,7 @@ class ClaudeCliProvider(BaseLLMProvider):
             user = SPLIT_EXTRACTION_PROMPT.format(posts_block=posts_block)
 
         response_text = await self._call_cli(system, user)
-        return self._parse_json_response(response_text)
+        return parse_llm_json_response(response_text)
 
     async def extract_sentiment(self, descriptions: list[str]) -> list[dict]:
         """独立情感分析。"""
@@ -165,7 +145,7 @@ class ClaudeCliProvider(BaseLLMProvider):
         user = SPLIT_SENTIMENT_PROMPT.format(items_block=items_block)
 
         response_text = await self._call_cli(system, user)
-        return self._parse_json_response(response_text)
+        return parse_llm_json_response(response_text)
 
     async def generate_cluster_label(
         self, cluster_descriptions: list[str]
@@ -179,24 +159,28 @@ class ClaudeCliProvider(BaseLLMProvider):
 
     @classmethod
     def is_available(cls, cli_command: str = "claude-glm") -> bool:
-        """检查 CLI 是否可用。"""
+        """检查 CLI 是否可用（使用 shutil.which 安全检测）。"""
+        try:
+            _validate_safe_name(cli_command, "cli_command")
+        except ValueError:
+            return False
+
+        if shutil.which(cli_command):
+            return True
+
+        # Windows: 尝试通过 PowerShell 查找
         import sys
 
-        try:
-            if sys.platform == "win32":
+        if sys.platform == "win32":
+            try:
                 result = subprocess.run(
-                    ["powershell.exe", "-Command", f"{cli_command} --version"],
+                    ["powershell.exe", "-Command", f"Get-Command {cli_command} -ErrorAction SilentlyContinue"],
                     capture_output=True,
                     text=True,
                     timeout=10,
                 )
-            else:
-                result = subprocess.run(
-                    [cli_command, "--version"],
-                    capture_output=True,
-                    text=True,
-                    timeout=10,
-                )
-            return result.returncode == 0
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            return False
+                return result.returncode == 0 and bool(result.stdout.strip())
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                return False
+
+        return False

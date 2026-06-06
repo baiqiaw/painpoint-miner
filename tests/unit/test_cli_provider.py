@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from painpoint_miner.llm.claude_cli_provider import ClaudeCliProvider
+from painpoint_miner.llm.utils import parse_llm_json_response
 from painpoint_miner.utils.cost import CostTracker
 
 
@@ -31,30 +32,30 @@ class TestClaudeCliProviderInit:
 
 
 class TestParseJsonResponse:
-    """_parse_json_response 静态方法测试。"""
+    """parse_llm_json_response 共享函数测试。"""
 
     def test_valid_json_array(self):
         text = '[{"a": 1}, {"b": 2}]'
-        result = ClaudeCliProvider._parse_json_response(text)
+        result = parse_llm_json_response(text)
         assert len(result) == 2
 
     def test_valid_json_object_wrapped(self):
         text = '{"a": 1}'
-        result = ClaudeCliProvider._parse_json_response(text)
+        result = parse_llm_json_response(text)
         assert isinstance(result, list)
         assert result[0]["a"] == 1
 
     def test_json_in_markdown_code_block(self):
         text = '```json\n[{"test": true}]\n```'
-        result = ClaudeCliProvider._parse_json_response(text)
+        result = parse_llm_json_response(text)
         assert result[0]["test"] is True
 
     def test_invalid_json_returns_empty(self):
-        result = ClaudeCliProvider._parse_json_response("not json at all")
+        result = parse_llm_json_response("not json at all")
         assert result == []
 
     def test_empty_string_returns_empty(self):
-        result = ClaudeCliProvider._parse_json_response("")
+        result = parse_llm_json_response("")
         assert result == []
 
 

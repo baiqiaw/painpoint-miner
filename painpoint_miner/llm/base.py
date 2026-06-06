@@ -1,7 +1,6 @@
 """抽象 LLM Provider 接口。"""
 
 from abc import ABC, abstractmethod
-from typing import Any
 
 
 class BaseLLMProvider(ABC):
@@ -24,7 +23,23 @@ class BaseLLMProvider(ABC):
         """
 
     @abstractmethod
+    async def extract_sentiment(self, descriptions: list[str]) -> list[dict]:
+        """独立情感分析（split 模式使用）。
+
+        Args:
+            descriptions: 痛点描述列表
+
+        Returns:
+            情感分析结果列表（含 sentiment_score, sentiment_label）
+        """
+
+    @abstractmethod
     async def generate_cluster_label(
         self, cluster_descriptions: list[str]
     ) -> str:
         """为聚类生成主题标签。"""
+
+    @classmethod
+    def is_available(cls) -> bool:
+        """检查此 Provider 是否可用（默认 True）。"""
+        return True

@@ -571,98 +571,98 @@ class TestPipelineRun:
 
 
 # ===================================================================
-# ClaudeProvider — _parse_json_response tests
+# parse_llm_json_response 共享函数测试
 # ===================================================================
 
 
 class TestParseJsonResponse:
-    """ClaudeProvider._parse_json_response() 静态方法测试。"""
+    """parse_llm_json_response() 共享函数测试。"""
 
     def test_valid_json_array(self):
         """有效的 JSON 数组应原样返回。"""
-        from painpoint_miner.llm.claude_provider import ClaudeProvider
+        from painpoint_miner.llm.utils import parse_llm_json_response
 
         text = '[{"description": "按钮找不到", "pain_type": "ux_problem"}]'
-        result = ClaudeProvider._parse_json_response(text)
+        result = parse_llm_json_response(text)
         assert len(result) == 1
         assert result[0]["description"] == "按钮找不到"
 
     def test_valid_json_object_wrapped_in_list(self):
         """有效的 JSON 对象应包装在一个列表中。"""
-        from painpoint_miner.llm.claude_provider import ClaudeProvider
+        from painpoint_miner.llm.utils import parse_llm_json_response
 
         text = '{"description": "加载太慢", "pain_type": "performance"}'
-        result = ClaudeProvider._parse_json_response(text)
+        result = parse_llm_json_response(text)
         assert len(result) == 1
         assert result[0]["description"] == "加载太慢"
 
     def test_json_in_markdown_code_block(self):
         """JSON 包裹在 markdown 代码块中时应正确提取。"""
-        from painpoint_miner.llm.claude_provider import ClaudeProvider
+        from painpoint_miner.llm.utils import parse_llm_json_response
 
         text = '```json\n[{"description": "价格太高", "pain_type": "pricing"}]\n```'
-        result = ClaudeProvider._parse_json_response(text)
+        result = parse_llm_json_response(text)
         assert len(result) == 1
         assert result[0]["pain_type"] == "pricing"
 
     def test_json_in_markdown_code_block_no_language(self):
         """不带语言说明符的 JSON 包裹在 markdown 代码块中时应正确提取。"""
-        from painpoint_miner.llm.claude_provider import ClaudeProvider
+        from painpoint_miner.llm.utils import parse_llm_json_response
 
         text = '```\n[{"description": "bug崩溃"}]\n```'
-        result = ClaudeProvider._parse_json_response(text)
+        result = parse_llm_json_response(text)
         assert len(result) == 1
         assert result[0]["description"] == "bug崩溃"
 
     def test_json_embedded_in_text(self):
         """JSON 数组嵌入在周围文本中时，应通过 regex 提取。"""
-        from painpoint_miner.llm.claude_provider import ClaudeProvider
+        from painpoint_miner.llm.utils import parse_llm_json_response
 
         text = 'Here is the analysis:\n[{"a": 1}]\nEnd of analysis.'
-        result = ClaudeProvider._parse_json_response(text)
+        result = parse_llm_json_response(text)
         assert len(result) == 1
         assert result[0]["a"] == 1
 
     def test_invalid_json_returns_empty_list(self):
         """无效的 JSON 应返回一个空列表。"""
-        from painpoint_miner.llm.claude_provider import ClaudeProvider
+        from painpoint_miner.llm.utils import parse_llm_json_response
 
-        result = ClaudeProvider._parse_json_response("this is not json at all")
+        result = parse_llm_json_response("this is not json at all")
         assert result == []
 
     def test_empty_string_returns_empty_list(self):
         """空字符串应返回一个空列表。"""
-        from painpoint_miner.llm.claude_provider import ClaudeProvider
+        from painpoint_miner.llm.utils import parse_llm_json_response
 
-        result = ClaudeProvider._parse_json_response("")
+        result = parse_llm_json_response("")
         assert result == []
 
     def test_whitespace_only_returns_empty_list(self):
         """只包含空格的字符串应返回一个空列表。"""
-        from painpoint_miner.llm.claude_provider import ClaudeProvider
+        from painpoint_miner.llm.utils import parse_llm_json_response
 
-        result = ClaudeProvider._parse_json_response("   \n\t  ")
+        result = parse_llm_json_response("   \n\t  ")
         assert result == []
 
     def test_multiple_items_in_array(self):
         """包含多个对象的 JSON 数组应全部返回。"""
-        from painpoint_miner.llm.claude_provider import ClaudeProvider
+        from painpoint_miner.llm.utils import parse_llm_json_response
 
         text = json.dumps([
             {"description": "问题A"},
             {"description": "问题B"},
             {"description": "问题C"},
         ])
-        result = ClaudeProvider._parse_json_response(text)
+        result = parse_llm_json_response(text)
         assert len(result) == 3
 
     def test_nested_json_in_markdown(self):
         """JSON 包裹在带有嵌套内容的代码块中。"""
-        from painpoint_miner.llm.claude_provider import ClaudeProvider
+        from painpoint_miner.llm.utils import parse_llm_json_response
 
         payload = [{"key": "value", "nested": {"a": 1}}]
         text = f"```json\n{json.dumps(payload)}\n```"
-        result = ClaudeProvider._parse_json_response(text)
+        result = parse_llm_json_response(text)
         assert result[0]["nested"]["a"] == 1
 
 

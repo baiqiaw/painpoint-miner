@@ -76,27 +76,35 @@ class TestMockLLMProvider:
 
 
 class TestClaudeProviderJsonParsing:
-    """ClaudeProvider JSON 解析测试。"""
+    """LLM JSON 解析测试（共享 parse_llm_json_response）。"""
 
     def test_parse_clean_json(self):
+        from painpoint_miner.llm.utils import parse_llm_json_response
+
         text = '[{"post_index": 0, "has_pain_point": true, "pain_points": []}]'
-        result = ClaudeProvider._parse_json_response(text)
+        result = parse_llm_json_response(text)
         assert len(result) == 1
         assert result[0]["post_index"] == 0
 
     def test_parse_json_with_markdown(self):
+        from painpoint_miner.llm.utils import parse_llm_json_response
+
         text = '```json\n[{"post_index": 0, "has_pain_point": true, "pain_points": []}]\n```'
-        result = ClaudeProvider._parse_json_response(text)
+        result = parse_llm_json_response(text)
         assert len(result) == 1
 
     def test_parse_json_embedded_in_text(self):
+        from painpoint_miner.llm.utils import parse_llm_json_response
+
         text = 'Here are the results:\n[{"post_index": 0, "has_pain_point": true, "pain_points": []}]\nDone.'
-        result = ClaudeProvider._parse_json_response(text)
+        result = parse_llm_json_response(text)
         assert len(result) == 1
 
     def test_parse_invalid_json_returns_empty(self):
+        from painpoint_miner.llm.utils import parse_llm_json_response
+
         text = "This is not JSON at all"
-        result = ClaudeProvider._parse_json_response(text)
+        result = parse_llm_json_response(text)
         assert result == []
 
 
